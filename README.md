@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 # RSBongo
-=======
-# BongoRS— bongocat overlay proof of concept
->>>>>>> dev
 
 Global keyboard/mouse capture (evdev) driving a transparent, always-on-top
 Bevy window with a sprite that reacts to input, regardless of window focus.
@@ -52,12 +48,16 @@ cargo run
 
 ## Known unverified spots
 
-1. **Window dragging (`handle_window_drag` in main.rs)** — uses
-   `bevy::winit::WinitWindows` + `winit::window::Window::drag_window()`.
-   This is the one part of the port I couldn't cross-check against an
-   official Bevy example. If it doesn't compile, the fix is likely a
-   renamed resource/method between Bevy patch versions — check Bevy's
-   migration guide for the version you land on.
+1. **Window dragging** — `drag_window()` (via `WinitWindows`) compiles
+   and returns `Ok(())`, but on GNOME/Wayland it doesn't actually appear
+   to move the window (silently accepted by the compositor, no visible
+   effect — likely a Wayland `xdg_shell` move-request serial/timing
+   issue, since the request happens a frame or so after the actual
+   click event). Left in as `handle_window_drag` for compositors that
+   might honor it, but don't rely on it. Real fix: `decorations` is now
+   tied to `click_through` — with `click_through = false` you get a
+   normal title bar and your WM/compositor drags it natively, no custom
+   code involved.
 2. **`Query::single_mut()` / `single()`** — Bevy has renamed and
    re-signatured these (`get_single` vs `single`, panic vs `Result`)
    across several releases. Written here assuming `single()` returns

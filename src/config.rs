@@ -14,9 +14,10 @@ pub struct Config {
     pub always_on_top: bool,
 
     /// Whether clicks pass through the window to whatever's underneath.
-    /// Set this to `false` while developing/positioning the cat — with
-    /// click-through on, the window can never receive the mouse clicks
-    /// needed to drag it around.
+    /// Set this to `false` while developing/positioning the cat — this
+    /// also shows a normal title bar so your WM/compositor can drag it
+    /// natively. Flip back to `true` for real overlay behavior (no
+    /// title bar, clicks pass through).
     #[serde(default = "default_click_through")]
     pub click_through: bool,
 
@@ -62,8 +63,9 @@ pub fn load() -> Config {
              scale = {}\n\n\
              # Keep the overlay window above other windows.\n\
              always_on_top = {}\n\n\
-             # Set to false to be able to click and drag the window\n\
-             # (e.g. while positioning it). true = normal overlay behavior.\n\
+             # Set to false while positioning the cat: shows a normal\n\
+             # title bar you can drag with, and disables click-through.\n\
+             # true = real overlay behavior (no title bar, clicks pass through).\n\
              click_through = {}\n\n\
              # How long the arm-down frame stays visible per tap, in ms.\n\
              animation_hold_ms = {}\n",

@@ -59,6 +59,10 @@ fn main() {
     println!("=== RSBongo (Bevy) ===");
 
     let cfg = config::load();
+    println!(
+        "[config] scale={} always_on_top={} click_through={} animation_hold_ms={}",
+        cfg.scale, cfg.always_on_top, cfg.click_through, cfg.animation_hold_ms
+    );
 
     // Peek the spritesheet's dimensions synchronously (just the header,
     // not a full decode) so we can size the window before Bevy's own
@@ -89,10 +93,20 @@ fn main() {
         title: "RSBongo".into(),
         resolution: WindowResolution::new(scaled_width, scaled_height),
         transparent: true,
-        decorations: false,
+        // show a normal title bar when click_through is off — this
+        // lets your WM/compositor handle dragging natively instead of
+        // relying on drag_window(), which turned out to be unreliable
+        // on GNOME/Wayland
+        decorations: !cfg.click_through,
         resizable: false,
         window_level,
         position: WindowPosition::Automatic,
+        // caps rendering to the monitor's refresh rate via vsync,
+        // instead of rendering as fast as possible — no reason to
+        // burn GPU cycles drawing hundreds of idle frames a second
+        // for a static cat sprite. Falls back to uncapped rendering
+        // only if the platform genuinely can't do vsync.
+        present_mode: bevy::window::PresentMode::AutoVsync,
         ..default()
     };
 
