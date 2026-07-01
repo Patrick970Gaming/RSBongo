@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 # RSBongo
+=======
+# BongoRS— bongocat overlay proof of concept
+>>>>>>> dev
 
 Global keyboard/mouse capture (evdev) driving a transparent, always-on-top
 Bevy window with a sprite that reacts to input, regardless of window focus.
