@@ -4,14 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+bevy = "0.17"
 evdev = "0.12"
-winit = "0.30"
-softbuffer = "0.4"
-raw-window-handle = "0.6"
-image = { version = "0.25", default-features = false, features = ["png"] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+crossbeam-channel = "0.5"
+# only used to cheaply read spritesheet dimensions before Bevy's App
+# is built (Bevy's own asset loading is async, so we can't rely on it
+# to know frame size early enough to size the window)
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11rb = "0.13"
+raw-window-handle = "0.6"

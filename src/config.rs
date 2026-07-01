@@ -3,23 +3,26 @@ use std::path::Path;
 
 const CONFIG_PATH: &str = "config.toml";
 
-/// Application config, loaded from config.toml in the working directory.
-/// Deliberately minimal for now — this is the place to add future
-/// settings (e.g. animation hold time, spritesheet path, server URL)
-/// rather than hardcoding more constants in main.rs.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
-    /// Scales the sprite image up or down. 1.0 = original spritesheet
-    /// size, 2.0 = double size, 0.5 = half size. Must be > 0.
+    /// Scales the sprite up or down. 1.0 = original spritesheet size.
     #[serde(default = "default_scale")]
     pub scale: f32,
 
     /// Whether the overlay window should stay above other windows.
-    /// Defaults to true, which is the whole point of an overlay — but
-    /// useful to turn off for debugging (e.g. so you can drag it
-    /// around without it fighting your window manager).
     #[serde(default = "default_always_on_top")]
     pub always_on_top: bool,
+
+    /// Whether clicks pass through the window to whatever's underneath.
+    /// Set this to `false` while developing/positioning the cat — with
+    /// click-through on, the window can never receive the mouse clicks
+    /// needed to drag it around.
+    #[serde(default = "default_click_through")]
+    pub click_through: bool,
+
+    /// Milliseconds the "arm down" frame stays up before reverting to idle.
+    #[serde(default = "default_animation_hold_ms")]
+    pub animation_hold_ms: u64,
 }
 
 impl Default for Config {
@@ -27,6 +30,8 @@ impl Default for Config {
         Self {
             scale: default_scale(),
             always_on_top: default_always_on_top(),
+            click_through: default_click_through(),
+            animation_hold_ms: default_animation_hold_ms(),
         }
     }
 }
@@ -34,16 +39,18 @@ impl Default for Config {
 fn default_scale() -> f32 {
     1.0
 }
-
 fn default_always_on_top() -> bool {
     true
 }
+fn default_click_through() -> bool {
+    true
+}
+fn default_animation_hold_ms() -> u64 {
+    60
+}
 
-/// Loads config.toml from the current working directory. If it doesn't
-/// exist yet, writes out a default one (so there's something to edit)
-/// and returns default values for this run. Falls back to defaults on
-/// any parse/read error rather than failing the whole app over a bad
-/// config file.
+/// Loads config.toml from the working directory, creating a default one
+/// on first run. Falls back to defaults on any parse/read error.
 pub fn load() -> Config {
     let path = Path::new(CONFIG_PATH);
 
@@ -54,15 +61,17 @@ pub fn load() -> Config {
              # Scales the sprite image up or down. 1.0 = original size.\n\
              scale = {}\n\n\
              # Keep the overlay window above other windows.\n\
-             always_on_top = {}\n",
-            default.scale, default.always_on_top
+             always_on_top = {}\n\n\
+             # Set to false to be able to click and drag the window\n\
+             # (e.g. while positioning it). true = normal overlay behavior.\n\
+             click_through = {}\n\n\
+             # How long the arm-down frame stays visible per tap, in ms.\n\
+             animation_hold_ms = {}\n",
+            default.scale, default.always_on_top, default.click_through, default.animation_hold_ms
         );
 
         match std::fs::write(path, contents) {
-            Ok(()) => println!(
-                "[config] wrote default config.toml (scale = {}, always_on_top = {})",
-                default.scale, default.always_on_top
-            ),
+            Ok(()) => println!("[config] wrote default config.toml"),
             Err(e) => eprintln!("[config] couldn't write default config.toml: {e}"),
         }
 

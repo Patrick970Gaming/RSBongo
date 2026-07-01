@@ -1,220 +1,66 @@
 mod config;
 mod input;
-mod sprite;
 
 #[cfg(target_os = "linux")]
 mod platform {
     pub mod x11;
 }
 
+use bevy::asset::AssetServer;
+use bevy::input::ButtonInput;
+use bevy::prelude::*;
+use bevy::window::{PrimaryWindow, WindowLevel, WindowPosition, WindowResolution};
+use bevy::winit::WinitWindows;
 use input::AppEvent;
-use rand::Rng;
-use sprite::{Frame, SpriteSheet};
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::window::{Window, WindowAttributes, WindowLevel};
+use std::time::Duration;
 
-// path to the spritesheet PNG — 3 equal-width frames side by side:
-// [ idle | left-arm-down | right-arm-down ]. See sprite.rs for the
-// exact layout contract.
 const SPRITESHEET_PATH: &str = "assets/bongocat.png";
+const FRAME_COUNT: u32 = 3;
 
-// how long the "hit" frame stays up after a keypress before reverting to idle
-// tune this to taste — lower = snappier, but too low and fast typing may
-// look like a constant blur rather than distinct taps
-const ANIMATION_HOLD: Duration = Duration::from_millis(60);
-
-struct App {
-    sheet: SpriteSheet,
-    frame_width: u32,
-    frame_height: u32,
-    always_on_top: bool,
-    window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    current_frame: Frame,
-    revert_at: Option<Instant>,
+/// Which spritesheet column each state uses. Layout is
+/// [ idle | left-arm-down | right-arm-down ], left to right.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Frame {
+    Idle = 0,
+    LeftArmDown = 1,
+    RightArmDown = 2,
 }
 
-impl App {
-    fn new(sheet: SpriteSheet, always_on_top: bool) -> Self {
-        let (frame_width, frame_height) = sheet.frame_size();
-        Self {
-            sheet,
-            frame_width,
-            frame_height,
-            always_on_top,
-            window: None,
-            surface: None,
-            current_frame: Frame::Idle,
-            revert_at: None,
-        }
-    }
-
-    fn redraw(&mut self) {
-        let Some(surface) = self.surface.as_mut() else { return };
-        let mut buffer = match surface.buffer_mut() {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("failed to get draw buffer: {e}");
-                return;
-            }
-        };
-
-        self.sheet.draw(&mut buffer, self.current_frame);
-
-        if let Err(e) = buffer.present() {
-            eprintln!("failed to present frame: {e}");
-        }
-    }
-
-    /// Picks a random arm to animate — this is the "individual control
-    /// of the arms" behavior: each event independently rolls which
-    /// side taps, rather than always alternating or always using both.
-    fn random_arm_frame() -> Frame {
-        if rand::thread_rng().gen_bool(0.5) {
-            Frame::LeftArmDown
-        } else {
-            Frame::RightArmDown
-        }
+fn random_arm_frame() -> Frame {
+    if rand::random::<bool>() {
+        Frame::LeftArmDown
+    } else {
+        Frame::RightArmDown
     }
 }
 
-impl ApplicationHandler<AppEvent> for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.window.is_some() {
-            return; // already set up
-        }
+#[derive(Resource, Clone)]
+struct AppConfig(config::Config);
 
-        let width = self.frame_width;
-        let height = self.frame_height;
+#[derive(Resource)]
+struct InputEventReceiver(crossbeam_channel::Receiver<AppEvent>);
 
-        // figure out a bottom-of-screen position on the primary monitor,
-        // falling back to (100, 100) if we can't detect one
-        let position = event_loop
-            .primary_monitor()
-            .map(|m| {
-                let size = m.size();
-                LogicalPosition::new(
-                    (size.width as f64 / 2.0) - (width as f64 / 2.0),
-                    size.height as f64 - height as f64 - 40.0,
-                )
-            })
-            .unwrap_or(LogicalPosition::new(100.0, 100.0));
+#[derive(Resource, Default)]
+struct ReleaseCounter(u64);
 
-        let window_level = if self.always_on_top {
-            WindowLevel::AlwaysOnTop
-        } else {
-            WindowLevel::Normal
-        };
-
-        let attrs = WindowAttributes::default()
-            .with_inner_size(LogicalSize::new(width, height))
-            .with_position(position)
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_resizable(false)
-            .with_window_level(window_level)
-            .with_title("RSBongo");
-
-        let window = Arc::new(
-            event_loop
-                .create_window(attrs)
-                .expect("failed to create window"),
-        );
-
-        #[cfg(target_os = "linux")]
-        {
-            // only meaningful under X11 — see platform::x11 for details
-            if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11") {
-                platform::x11::make_click_through(&window);
-            } else {
-                eprintln!(
-                    "[overlay] click-through skipped: not an X11 session \
-                     (Wayland needs layer-shell, which isn't wired up yet)"
-                );
-            }
-        }
-
-        let context = softbuffer::Context::new(Arc::clone(&window)).expect("softbuffer context");
-        let mut surface =
-            softbuffer::Surface::new(&context, Arc::clone(&window)).expect("softbuffer surface");
-        surface
-            .resize(
-                NonZeroU32::new(width).unwrap(),
-                NonZeroU32::new(height).unwrap(),
-            )
-            .expect("failed to size surface");
-
-        self.window = Some(window);
-        self.surface = Some(surface);
-        self.redraw();
-    }
-
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
-        match event {
-            // only the press drives the visual — animating on both press
-            // and release made every real tap look like two, since each
-            // physical keystroke fires both events in quick succession.
-            AppEvent::KeyPressed => {
-                self.current_frame = Self::random_arm_frame();
-                self.revert_at = Some(Instant::now() + ANIMATION_HOLD);
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-                event_loop.set_control_flow(ControlFlow::WaitUntil(
-                    Instant::now() + ANIMATION_HOLD,
-                ));
-            }
-            // reserved for the counter/server push work — deliberately
-            // not touching animation state here
-            AppEvent::KeyReleased => {}
-        }
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _window_id: winit::window::WindowId,
-        event: WindowEvent,
-    ) {
-        match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::RedrawRequested => self.redraw(),
-            _ => {}
-        }
-    }
-
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(deadline) = self.revert_at {
-            if Instant::now() >= deadline {
-                self.current_frame = Frame::Idle;
-                self.revert_at = None;
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
-                event_loop.set_control_flow(ControlFlow::Wait);
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
-            }
-        }
-    }
+/// Marker + animation state for the cat sprite entity.
+#[derive(Component, Default)]
+struct BongoCat {
+    revert_at: Option<f32>,
 }
 
 fn main() {
-    println!("=== RSBongo overlay PoC ===");
+    println!("=== RSBongo (Bevy) ===");
 
     let cfg = config::load();
-    println!("[config] scale = {}", cfg.scale);
 
-    let sheet = match SpriteSheet::load(SPRITESHEET_PATH, cfg.scale) {
-        Ok(s) => s,
+    // Peek the spritesheet's dimensions synchronously (just the header,
+    // not a full decode) so we can size the window before Bevy's own
+    // async asset loading has had a chance to load anything.
+    let (total_width, height) = match image::image_dimensions(SPRITESHEET_PATH) {
+        Ok(dims) => dims,
         Err(e) => {
-            eprintln!("failed to load spritesheet at {SPRITESHEET_PATH}: {e}");
+            eprintln!("failed to read spritesheet at {SPRITESHEET_PATH}: {e}");
             eprintln!(
                 "expected a PNG with 3 equal-width frames side by side: \
                  [ idle | left-arm-down | right-arm-down ]"
@@ -222,13 +68,183 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let frame_width = total_width / FRAME_COUNT;
 
-    let event_loop: EventLoop<AppEvent> =
-        EventLoop::with_user_event().build().expect("event loop");
-    let proxy: EventLoopProxy<AppEvent> = event_loop.create_proxy();
+    let scaled_width = (frame_width as f32 * cfg.scale).round().max(1.0);
+    let scaled_height = (height as f32 * cfg.scale).round().max(1.0);
 
-    input::spawn_listeners(proxy);
+    let window_level = if cfg.always_on_top {
+        WindowLevel::AlwaysOnTop
+    } else {
+        WindowLevel::Normal
+    };
 
-    let mut app = App::new(sheet, cfg.always_on_top);
-    event_loop.run_app(&mut app).expect("event loop run");
+    let window = Window {
+        title: "RSBongo".into(),
+        resolution: WindowResolution::new(scaled_width, scaled_height),
+        transparent: true,
+        decorations: false,
+        resizable: false,
+        window_level,
+        position: WindowPosition::Automatic,
+        ..default()
+    };
+
+    App::new()
+        .insert_resource(AppConfig(cfg))
+        .insert_resource(ReleaseCounter::default())
+        .insert_resource(ClearColor(Color::NONE))
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(window),
+            ..default()
+        }))
+        .add_systems(Startup, (setup, spawn_input_thread, setup_click_through))
+        .add_systems(Update, (poll_input_events, handle_window_drag))
+        .run();
+}
+
+fn setup(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    config: Res<AppConfig>,
+) {
+    commands.spawn(Camera2d);
+
+    let (total_width, height) =
+        image::image_dimensions(SPRITESHEET_PATH).expect("spritesheet already validated in main");
+    let frame_width = total_width / FRAME_COUNT;
+
+    let texture: Handle<Image> = asset_server.load(SPRITESHEET_PATH);
+    let layout = TextureAtlasLayout::from_grid(
+        UVec2::new(frame_width, height),
+        FRAME_COUNT,
+        1,
+        None,
+        None,
+    );
+    let layout_handle = atlas_layouts.add(layout);
+
+    let scale = config.0.scale;
+
+    commands.spawn((
+        Sprite {
+            image: texture,
+            texture_atlas: Some(TextureAtlas {
+                layout: layout_handle,
+                index: Frame::Idle as usize,
+            }),
+            custom_size: Some(Vec2::new(frame_width as f32 * scale, height as f32 * scale)),
+            ..default()
+        },
+        Transform::default(),
+        BongoCat::default(),
+    ));
+}
+
+/// Spawns the evdev listener thread(s) and hands the Bevy side a
+/// receiver to poll every frame.
+fn spawn_input_thread(mut commands: Commands) {
+    let (sender, receiver) = crossbeam_channel::unbounded();
+    input::spawn_listeners(sender);
+    commands.insert_resource(InputEventReceiver(receiver));
+}
+
+/// Drains any pending input events, picks a random arm on press,
+/// increments the release counter on release, and reverts to idle
+/// after the configured hold time.
+fn poll_input_events(
+    receiver: Option<Res<InputEventReceiver>>,
+    mut release_counter: ResMut<ReleaseCounter>,
+    mut query: Query<(&mut Sprite, &mut BongoCat)>,
+    time: Res<Time>,
+    config: Res<AppConfig>,
+) {
+    let Some(receiver) = receiver else { return };
+    let Ok((mut sprite, mut cat)) = query.single_mut() else {
+        return;
+    };
+
+    for event in receiver.0.try_iter() {
+        match event {
+            AppEvent::KeyPressed => {
+                if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                    atlas.index = random_arm_frame() as usize;
+                }
+                let hold_secs = Duration::from_millis(config.0.animation_hold_ms).as_secs_f32();
+                cat.revert_at = Some(time.elapsed_secs() + hold_secs);
+            }
+            AppEvent::KeyReleased => {
+                release_counter.0 += 1;
+                // TODO: send event to self-hosted server here
+            }
+        }
+    }
+
+    if let Some(revert_at) = cat.revert_at {
+        if time.elapsed_secs() >= revert_at {
+            if let Some(atlas) = sprite.texture_atlas.as_mut() {
+                atlas.index = Frame::Idle as usize;
+            }
+            cat.revert_at = None;
+        }
+    }
+}
+
+/// Lets you drag the overlay by clicking and holding — only actually
+/// receives the click if `click_through = false` in config, since a
+/// click-through window never gets mouse events in the first place
+/// (they pass straight to whatever's underneath).
+///
+/// NOTE (unverified): WinitWindows + Window::drag_window() is the one
+/// piece of this port I couldn't cross-check against an official Bevy
+/// example — worth confirming this compiles/works first before relying
+/// on it.
+fn handle_window_drag(
+    buttons: Res<ButtonInput<MouseButton>>,
+    winit_windows: NonSend<WinitWindows>,
+    primary_window: Query<Entity, With<PrimaryWindow>>,
+) {
+    if !buttons.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(entity) = primary_window.single() else {
+        return;
+    };
+    let Some(window) = winit_windows.get_window(entity) else {
+        return;
+    };
+    if let Err(e) = window.drag_window() {
+        eprintln!("[drag] failed to start window drag: {e}");
+    }
+}
+
+fn setup_click_through(
+    winit_windows: NonSend<WinitWindows>,
+    primary_window: Query<Entity, With<PrimaryWindow>>,
+    config: Res<AppConfig>,
+) {
+    if !config.0.click_through {
+        println!("[overlay] click_through = false — window is draggable, not click-through");
+        return;
+    }
+
+    let Ok(entity) = primary_window.single() else {
+        return;
+    };
+    let Some(_window) = winit_windows.get_window(entity) else {
+        return;
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11") {
+            platform::x11::make_click_through(_window);
+        } else {
+            eprintln!(
+                "[overlay] click-through skipped: not an X11 session \
+                 (Wayland needs layer-shell, still on the TODO list)"
+            );
+        }
+    }
 }
