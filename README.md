@@ -3,6 +3,25 @@
 Global keyboard/mouse capture (evdev) driving a transparent always-on-top
 window with a sprite that reacts to input, regardless of window focus.
 
+## Config
+
+`config.toml` is created automatically on first run (in the working
+directory) if it doesn't exist yet, with default values. Currently just:
+
+```toml
+# RSBongo configuration
+
+# Scales the sprite image up or down. 1.0 = original size.
+scale = 1.0
+
+# Keep the overlay window above other windows.
+always_on_top = true
+```
+
+More settings (animation timing, spritesheet path, server URL, etc.) will
+land here over time — this is the intended home for future config rather
+than hardcoding more constants in main.rs.
+
 ## Spritesheet
 
 You need to supply `assets/bongocat.png` yourself — it's not included.

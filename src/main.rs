@@ -1,3 +1,4 @@
+mod config;
 mod input;
 mod sprite;
 
@@ -32,6 +33,7 @@ struct App {
     sheet: SpriteSheet,
     frame_width: u32,
     frame_height: u32,
+    always_on_top: bool,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
     current_frame: Frame,
@@ -39,12 +41,13 @@ struct App {
 }
 
 impl App {
-    fn new(sheet: SpriteSheet) -> Self {
+    fn new(sheet: SpriteSheet, always_on_top: bool) -> Self {
         let (frame_width, frame_height) = sheet.frame_size();
         Self {
             sheet,
             frame_width,
             frame_height,
+            always_on_top,
             window: None,
             surface: None,
             current_frame: Frame::Idle,
@@ -103,13 +106,19 @@ impl ApplicationHandler<AppEvent> for App {
             })
             .unwrap_or(LogicalPosition::new(100.0, 100.0));
 
+        let window_level = if self.always_on_top {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        };
+
         let attrs = WindowAttributes::default()
             .with_inner_size(LogicalSize::new(width, height))
             .with_position(position)
             .with_decorations(false)
             .with_transparent(true)
             .with_resizable(false)
-            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_window_level(window_level)
             .with_title("RSBongo");
 
         let window = Arc::new(
@@ -148,7 +157,10 @@ impl ApplicationHandler<AppEvent> for App {
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
-            AppEvent::KeyPressed | AppEvent::KeyReleased => {
+            // only the press drives the visual — animating on both press
+            // and release made every real tap look like two, since each
+            // physical keystroke fires both events in quick succession.
+            AppEvent::KeyPressed => {
                 self.current_frame = Self::random_arm_frame();
                 self.revert_at = Some(Instant::now() + ANIMATION_HOLD);
                 if let Some(window) = &self.window {
@@ -158,6 +170,9 @@ impl ApplicationHandler<AppEvent> for App {
                     Instant::now() + ANIMATION_HOLD,
                 ));
             }
+            // reserved for the counter/server push work — deliberately
+            // not touching animation state here
+            AppEvent::KeyReleased => {}
         }
     }
 
@@ -193,7 +208,10 @@ impl ApplicationHandler<AppEvent> for App {
 fn main() {
     println!("=== RSBongo overlay PoC ===");
 
-    let sheet = match SpriteSheet::load(SPRITESHEET_PATH) {
+    let cfg = config::load();
+    println!("[config] scale = {}", cfg.scale);
+
+    let sheet = match SpriteSheet::load(SPRITESHEET_PATH, cfg.scale) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("failed to load spritesheet at {SPRITESHEET_PATH}: {e}");
@@ -211,6 +229,6 @@ fn main() {
 
     input::spawn_listeners(proxy);
 
-    let mut app = App::new(sheet);
+    let mut app = App::new(sheet, cfg.always_on_top);
     event_loop.run_app(&mut app).expect("event loop run");
 }

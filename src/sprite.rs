@@ -1,3 +1,4 @@
+use image::imageops::FilterType;
 use image::GenericImageView;
 
 /// Which frame to display. Order here matches the horizontal layout
@@ -25,18 +26,37 @@ impl SpriteSheet {
     /// Frame width is inferred as `image_width / FRAME_COUNT`, so all
     /// three frames must be the same width. Frame height is the full
     /// image height.
-    pub fn load(path: &str) -> Result<Self, image::ImageError> {
+    ///
+    /// `scale` resizes each frame after cropping — 1.0 keeps the
+    /// original size, 2.0 doubles it, 0.5 halves it, etc. Uses nearest-
+    /// neighbor filtering to keep pixel-art edges crisp; switch to
+    /// FilterType::Lanczos3 below if you want smoother scaling for
+    /// higher-res source art instead.
+    pub fn load(path: &str, scale: f32) -> Result<Self, image::ImageError> {
         let img = image::open(path)?;
         let (total_width, height) = img.dimensions();
-        let frame_width = total_width / FRAME_COUNT;
-        let rgba = img.to_rgba8();
+        let base_frame_width = total_width / FRAME_COUNT;
+
+        let frame_width = ((base_frame_width as f32) * scale).round().max(1.0) as u32;
+        let frame_height = ((height as f32) * scale).round().max(1.0) as u32;
 
         let mut frames = Vec::with_capacity(FRAME_COUNT as usize);
         for i in 0..FRAME_COUNT {
-            let mut buf = vec![0u32; (frame_width * height) as usize];
-            for y in 0..height {
+            let cropped = img.crop_imm(i * base_frame_width, 0, base_frame_width, height);
+
+            // skip the resize entirely at 1.0 scale — avoids any
+            // filtering artifacts when the user hasn't asked for scaling
+            let scaled = if (scale - 1.0).abs() > f32::EPSILON {
+                cropped.resize_exact(frame_width, frame_height, FilterType::Nearest)
+            } else {
+                cropped
+            };
+
+            let rgba = scaled.to_rgba8();
+            let mut buf = vec![0u32; (frame_width * frame_height) as usize];
+            for y in 0..frame_height {
                 for x in 0..frame_width {
-                    let px = rgba.get_pixel(i * frame_width + x, y);
+                    let px = rgba.get_pixel(x, y);
                     let [r, g, b, a] = px.0;
                     // NOTE (unverified): packing as ARGB here. softbuffer's
                     // exact expected format (0RGB vs premultiplied ARGB)
@@ -56,7 +76,7 @@ impl SpriteSheet {
 
         Ok(Self {
             frame_width,
-            frame_height: height,
+            frame_height,
             frames,
         })
     }
