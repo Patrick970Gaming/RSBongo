@@ -14,7 +14,13 @@ use bevy::winit::WinitWindows;
 use input::AppEvent;
 use std::time::Duration;
 
-const SPRITESHEET_PATH: &str = "assets/bongocat.png";
+// Path for direct filesystem access (image::image_dimensions), relative
+// to the working directory.
+const SPRITESHEET_FS_PATH: &str = "assets/bongocat.png";
+// Path for Bevy's AssetServer, which treats `assets/` as its root and
+// prepends it automatically — passing the full path here would look
+// for assets/assets/bongocat.png.
+const SPRITESHEET_ASSET_PATH: &str = "bongocat.png";
 const FRAME_COUNT: u32 = 3;
 
 /// Which spritesheet column each state uses. Layout is
@@ -57,10 +63,10 @@ fn main() {
     // Peek the spritesheet's dimensions synchronously (just the header,
     // not a full decode) so we can size the window before Bevy's own
     // async asset loading has had a chance to load anything.
-    let (total_width, height) = match image::image_dimensions(SPRITESHEET_PATH) {
+    let (total_width, height) = match image::image_dimensions(SPRITESHEET_FS_PATH) {
         Ok(dims) => dims,
         Err(e) => {
-            eprintln!("failed to read spritesheet at {SPRITESHEET_PATH}: {e}");
+            eprintln!("failed to read spritesheet at {SPRITESHEET_FS_PATH}: {e}");
             eprintln!(
                 "expected a PNG with 3 equal-width frames side by side: \
                  [ idle | left-arm-down | right-arm-down ]"
@@ -70,8 +76,8 @@ fn main() {
     };
     let frame_width = total_width / FRAME_COUNT;
 
-    let scaled_width = (frame_width as f32 * cfg.scale).round().max(1.0);
-    let scaled_height = (height as f32 * cfg.scale).round().max(1.0);
+    let scaled_width = (frame_width as f32 * cfg.scale).round().max(1.0) as u32;
+    let scaled_height = (height as f32 * cfg.scale).round().max(1.0) as u32;
 
     let window_level = if cfg.always_on_top {
         WindowLevel::AlwaysOnTop
@@ -98,8 +104,8 @@ fn main() {
             primary_window: Some(window),
             ..default()
         }))
-        .add_systems(Startup, (setup, spawn_input_thread, setup_click_through))
-        .add_systems(Update, (poll_input_events, handle_window_drag))
+        .add_systems(Startup, (setup, spawn_input_thread))
+        .add_systems(Update, (poll_input_events, handle_window_drag, setup_click_through))
         .run();
 }
 
@@ -112,10 +118,10 @@ fn setup(
     commands.spawn(Camera2d);
 
     let (total_width, height) =
-        image::image_dimensions(SPRITESHEET_PATH).expect("spritesheet already validated in main");
+        image::image_dimensions(SPRITESHEET_FS_PATH).expect("spritesheet already validated in main");
     let frame_width = total_width / FRAME_COUNT;
 
-    let texture: Handle<Image> = asset_server.load(SPRITESHEET_PATH);
+    let texture: Handle<Image> = asset_server.load(SPRITESHEET_ASSET_PATH);
     let layout = TextureAtlasLayout::from_grid(
         UVec2::new(frame_width, height),
         FRAME_COUNT,
@@ -202,12 +208,15 @@ fn poll_input_events(
 /// on it.
 fn handle_window_drag(
     buttons: Res<ButtonInput<MouseButton>>,
-    winit_windows: NonSend<WinitWindows>,
+    winit_windows: Option<NonSend<WinitWindows>>,
     primary_window: Query<Entity, With<PrimaryWindow>>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) {
         return;
     }
+    let Some(winit_windows) = winit_windows else {
+        return;
+    };
     let Ok(entity) = primary_window.single() else {
         return;
     };
@@ -220,15 +229,21 @@ fn handle_window_drag(
 }
 
 fn setup_click_through(
-    winit_windows: NonSend<WinitWindows>,
+    winit_windows: Option<NonSend<WinitWindows>>,
     primary_window: Query<Entity, With<PrimaryWindow>>,
     config: Res<AppConfig>,
+    mut done: Local<bool>,
 ) {
-    if !config.0.click_through {
-        println!("[overlay] click_through = false — window is draggable, not click-through");
+    if *done {
         return;
     }
 
+    // WinitWindows doesn't exist yet during Startup — it's only
+    // inserted once winit's event loop actually resumes, which
+    // happens a beat later. Keep polling in Update until it shows up.
+    let Some(winit_windows) = winit_windows else {
+        return;
+    };
     let Ok(entity) = primary_window.single() else {
         return;
     };
@@ -236,10 +251,17 @@ fn setup_click_through(
         return;
     };
 
+    *done = true;
+
+    if !config.0.click_through {
+        println!("[overlay] click_through = false — window is draggable, not click-through");
+        return;
+    }
+
     #[cfg(target_os = "linux")]
     {
         if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11") {
-            platform::x11::make_click_through(_window);
+            platform::x11::make_click_through(&**_window);
         } else {
             eprintln!(
                 "[overlay] click-through skipped: not an X11 session \

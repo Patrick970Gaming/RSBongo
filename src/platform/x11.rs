@@ -1,16 +1,18 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use winit::window::Window;
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, ConnectionExt as _};
 use x11rb::rust_connection::RustConnection;
 
 /// Makes the window fully click-through on X11 via the XShape extension.
-/// No-ops (with a log line) on anything unexpected rather than
-/// crashing, since this is best-effort.
+/// Generic over `HasWindowHandle` rather than naming `winit::window::Window`
+/// directly — we don't depend on `winit` ourselves (Bevy pulls it in
+/// internally), so naming its concrete type here risked a version
+/// mismatch. Works with whatever window type Bevy hands us, as long as
+/// it implements the same raw-window-handle trait (it does).
 ///
 /// NOTE (unverified): not tested against a live X server in this
 /// environment — same caveat as before.
-pub fn make_click_through(window: &Window) {
+pub fn make_click_through(window: &impl HasWindowHandle) {
     let win_id = match window.window_handle().map(|h| h.as_raw()) {
         Ok(RawWindowHandle::Xlib(handle)) => handle.window as u32,
         Ok(RawWindowHandle::Xcb(handle)) => handle.window.get(),
