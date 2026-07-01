@@ -1,7 +1,17 @@
 [package]
-name = "input-poc"
+name = "rsbongo"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 evdev = "0.12"
+winit = "0.30"
+softbuffer = "0.4"
+raw-window-handle = "0.6"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = "0.13"
