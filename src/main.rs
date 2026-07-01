@@ -7,6 +7,8 @@ mod platform {
 }
 
 use input::AppEvent;
+use rand::Rng;
+use sprite::{Frame, SpriteSheet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,24 +18,36 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowAttributes, WindowLevel};
 
-const WINDOW_WIDTH: u32 = 200;
-const WINDOW_HEIGHT: u32 = 100;
+// path to the spritesheet PNG — 3 equal-width frames side by side:
+// [ idle | left-arm-down | right-arm-down ]. See sprite.rs for the
+// exact layout contract.
+const SPRITESHEET_PATH: &str = "assets/bongocat.png";
+
 // how long the "hit" frame stays up after a keypress before reverting to idle
-const ANIMATION_HOLD: Duration = Duration::from_millis(150);
+// tune this to taste — lower = snappier, but too low and fast typing may
+// look like a constant blur rather than distinct taps
+const ANIMATION_HOLD: Duration = Duration::from_millis(60);
 
 struct App {
+    sheet: SpriteSheet,
+    frame_width: u32,
+    frame_height: u32,
     window: Option<Arc<Window>>,
     surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
-    active: bool,
+    current_frame: Frame,
     revert_at: Option<Instant>,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(sheet: SpriteSheet) -> Self {
+        let (frame_width, frame_height) = sheet.frame_size();
         Self {
+            sheet,
+            frame_width,
+            frame_height,
             window: None,
             surface: None,
-            active: false,
+            current_frame: Frame::Idle,
             revert_at: None,
         }
     }
@@ -48,10 +62,21 @@ impl App {
             }
         };
 
-        sprite::draw(&mut buffer, WINDOW_WIDTH, WINDOW_HEIGHT, self.active);
+        self.sheet.draw(&mut buffer, self.current_frame);
 
         if let Err(e) = buffer.present() {
             eprintln!("failed to present frame: {e}");
+        }
+    }
+
+    /// Picks a random arm to animate — this is the "individual control
+    /// of the arms" behavior: each event independently rolls which
+    /// side taps, rather than always alternating or always using both.
+    fn random_arm_frame() -> Frame {
+        if rand::thread_rng().gen_bool(0.5) {
+            Frame::LeftArmDown
+        } else {
+            Frame::RightArmDown
         }
     }
 }
@@ -62,6 +87,9 @@ impl ApplicationHandler<AppEvent> for App {
             return; // already set up
         }
 
+        let width = self.frame_width;
+        let height = self.frame_height;
+
         // figure out a bottom-of-screen position on the primary monitor,
         // falling back to (100, 100) if we can't detect one
         let position = event_loop
@@ -69,20 +97,20 @@ impl ApplicationHandler<AppEvent> for App {
             .map(|m| {
                 let size = m.size();
                 LogicalPosition::new(
-                    (size.width as f64 / 2.0) - (WINDOW_WIDTH as f64 / 2.0),
-                    size.height as f64 - WINDOW_HEIGHT as f64 - 40.0,
+                    (size.width as f64 / 2.0) - (width as f64 / 2.0),
+                    size.height as f64 - height as f64 - 40.0,
                 )
             })
             .unwrap_or(LogicalPosition::new(100.0, 100.0));
 
         let attrs = WindowAttributes::default()
-            .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_inner_size(LogicalSize::new(width, height))
             .with_position(position)
             .with_decorations(false)
             .with_transparent(true)
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_title("bongocat-poc");
+            .with_title("RSBongo");
 
         let window = Arc::new(
             event_loop
@@ -108,8 +136,8 @@ impl ApplicationHandler<AppEvent> for App {
             softbuffer::Surface::new(&context, Arc::clone(&window)).expect("softbuffer surface");
         surface
             .resize(
-                NonZeroU32::new(WINDOW_WIDTH).unwrap(),
-                NonZeroU32::new(WINDOW_HEIGHT).unwrap(),
+                NonZeroU32::new(width).unwrap(),
+                NonZeroU32::new(height).unwrap(),
             )
             .expect("failed to size surface");
 
@@ -121,7 +149,7 @@ impl ApplicationHandler<AppEvent> for App {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
         match event {
             AppEvent::KeyPressed | AppEvent::KeyReleased => {
-                self.active = true;
+                self.current_frame = Self::random_arm_frame();
                 self.revert_at = Some(Instant::now() + ANIMATION_HOLD);
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -149,7 +177,7 @@ impl ApplicationHandler<AppEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(deadline) = self.revert_at {
             if Instant::now() >= deadline {
-                self.active = false;
+                self.current_frame = Frame::Idle;
                 self.revert_at = None;
                 if let Some(window) = &self.window {
                     window.request_redraw();
@@ -163,7 +191,19 @@ impl ApplicationHandler<AppEvent> for App {
 }
 
 fn main() {
-    println!("=== bongocat overlay PoC ===");
+    println!("=== RSBongo overlay PoC ===");
+
+    let sheet = match SpriteSheet::load(SPRITESHEET_PATH) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to load spritesheet at {SPRITESHEET_PATH}: {e}");
+            eprintln!(
+                "expected a PNG with 3 equal-width frames side by side: \
+                 [ idle | left-arm-down | right-arm-down ]"
+            );
+            std::process::exit(1);
+        }
+    };
 
     let event_loop: EventLoop<AppEvent> =
         EventLoop::with_user_event().build().expect("event loop");
@@ -171,6 +211,6 @@ fn main() {
 
     input::spawn_listeners(proxy);
 
-    let mut app = App::new();
+    let mut app = App::new(sheet);
     event_loop.run_app(&mut app).expect("event loop run");
 }

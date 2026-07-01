@@ -3,6 +3,23 @@
 Global keyboard/mouse capture (evdev) driving a transparent always-on-top
 window with a sprite that reacts to input, regardless of window focus.
 
+## Spritesheet
+
+You need to supply `assets/bongocat.png` yourself — it's not included.
+Layout requirement: **3 equal-width frames side by side, left to right**:
+
+```
+[ idle | left-arm-down | right-arm-down ]
+```
+
+Frame width is inferred as `total_image_width / 3`, so all three frames
+must be the same width; frame height is just the full image height. The
+window is sized to exactly one frame, so keep the cat centered within
+each frame's bounds.
+
+Each keypress/release randomly picks left or right arm (50/50) via `rand`,
+holds it for `ANIMATION_HOLD`, then reverts to idle.
+
 ## Setup
 
 ```bash
@@ -17,9 +34,9 @@ cargo build
 cargo run
 ```
 
-A small window should appear near the bottom-center of your screen, showing
-a simple placeholder cat shape. Its "paws" should pop up briefly every time
-you press or release a key/mouse button anywhere on the system.
+A small window should appear near the bottom-center of your screen, sized to
+match your spritesheet's frame dimensions. Every key press/release should
+briefly show a randomly-chosen arm-down frame, then snap back to idle.
 
 ## Known unverified spots (couldn't network-build to check these)
 
@@ -40,7 +57,6 @@ you press or release a key/mouse button anywhere on the system.
 
 ## What's next
 
-- Swap `sprite::draw`'s placeholder rectangles for real spritesheet frames
 - Wayland/wlroots support via `gtk4-layer-shell` or `smithay-client-toolkit`
   (GNOME/Wayland will keep falling back to a plain non-click-through window,
   as discussed — no way around that without a compositor extension)

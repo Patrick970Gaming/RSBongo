@@ -1,42 +1,77 @@
-/// Draws one frame into `buffer` (a `width * height` array of 0RGB u32
-/// pixels, as expected by softbuffer). This is a placeholder sprite —
-/// two crude drawn frames — so the PoC has zero external asset
-/// dependencies. Swap this out for real spritesheet rendering later.
-pub fn draw(buffer: &mut [u32], width: u32, height: u32, active: bool) {
-    let width = width as i32;
-    let height = height as i32;
+use image::GenericImageView;
 
-    // Fully transparent background. NOTE: plain softbuffer buffers are
-    // 0RGB (no alpha channel) on most backends, so true per-pixel
-    // transparency depends on the window compositor picking up alpha
-    // from elsewhere. This line is a no-op placeholder for that;
-    // expect to revisit this once you can see it rendered — it's one
-    // of the two things flagged as unverified in the writeup.
-    buffer.fill(0x00000000);
-
-    let cx = width / 2;
-    let body_y = height - 30;
-
-    // Body (simple circle-ish blob via a filled rect for now)
-    fill_rect(buffer, width, height, cx - 25, body_y - 20, 50, 20, 0xFFDDA85F);
-
-    // Ears
-    fill_rect(buffer, width, height, cx - 22, body_y - 30, 8, 10, 0xFFDDA85F);
-    fill_rect(buffer, width, height, cx + 14, body_y - 30, 8, 10, 0xFFDDA85F);
-
-    // Paws — this is the part that moves between frames
-    let paw_y = if active { body_y - 35 } else { body_y - 15 };
-    fill_rect(buffer, width, height, cx - 30, paw_y, 10, 10, 0xFF553311);
-    fill_rect(buffer, width, height, cx + 20, paw_y, 10, 10, 0xFF553311);
+/// Which frame to display. Order here matches the horizontal layout
+/// expected in the spritesheet PNG — see `SpriteSheet::load`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frame {
+    Idle = 0,
+    LeftArmDown = 1,
+    RightArmDown = 2,
 }
 
-fn fill_rect(buffer: &mut [u32], width: i32, height: i32, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    for row in y.max(0)..(y + h).min(height) {
-        for col in x.max(0)..(x + w).min(width) {
-            let idx = (row * width + col) as usize;
-            if idx < buffer.len() {
-                buffer[idx] = color;
+const FRAME_COUNT: u32 = 3;
+
+pub struct SpriteSheet {
+    frame_width: u32,
+    frame_height: u32,
+    // one flat buffer per frame, each frame_width * frame_height u32s
+    frames: Vec<Vec<u32>>,
+}
+
+impl SpriteSheet {
+    /// Loads a spritesheet PNG expected to contain exactly `FRAME_COUNT`
+    /// (3) equal-width frames side by side, left to right:
+    ///   [ idle | left-arm-down | right-arm-down ]
+    /// Frame width is inferred as `image_width / FRAME_COUNT`, so all
+    /// three frames must be the same width. Frame height is the full
+    /// image height.
+    pub fn load(path: &str) -> Result<Self, image::ImageError> {
+        let img = image::open(path)?;
+        let (total_width, height) = img.dimensions();
+        let frame_width = total_width / FRAME_COUNT;
+        let rgba = img.to_rgba8();
+
+        let mut frames = Vec::with_capacity(FRAME_COUNT as usize);
+        for i in 0..FRAME_COUNT {
+            let mut buf = vec![0u32; (frame_width * height) as usize];
+            for y in 0..height {
+                for x in 0..frame_width {
+                    let px = rgba.get_pixel(i * frame_width + x, y);
+                    let [r, g, b, a] = px.0;
+                    // NOTE (unverified): packing as ARGB here. softbuffer's
+                    // exact expected format (0RGB vs premultiplied ARGB)
+                    // is the same open question flagged earlier re:
+                    // transparency — if transparent pixels render as solid
+                    // black/white instead of see-through, this packing is
+                    // the first thing to revisit.
+                    let packed = ((a as u32) << 24)
+                        | ((r as u32) << 16)
+                        | ((g as u32) << 8)
+                        | (b as u32);
+                    buf[(y * frame_width + x) as usize] = packed;
+                }
             }
+            frames.push(buf);
         }
+
+        Ok(Self {
+            frame_width,
+            frame_height: height,
+            frames,
+        })
+    }
+
+    pub fn frame_size(&self) -> (u32, u32) {
+        (self.frame_width, self.frame_height)
+    }
+
+    /// Copies the given frame directly into `dest`, which must be
+    /// exactly `frame_width * frame_height` u32s (i.e. the window
+    /// buffer should be sized to match the spritesheet frame size —
+    /// see how the window is created in main.rs).
+    pub fn draw(&self, dest: &mut [u32], frame: Frame) {
+        let data = &self.frames[frame as usize];
+        let len = data.len().min(dest.len());
+        dest[..len].copy_from_slice(&data[..len]);
     }
 }
