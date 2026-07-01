@@ -1,4 +1,4 @@
-# input-poc — bongocat overlay proof of concept
+# BongoRS— bongocat overlay proof of concept
 
 Global keyboard/mouse capture (evdev) driving a transparent always-on-top
 window with a sprite that reacts to input, regardless of window focus.
