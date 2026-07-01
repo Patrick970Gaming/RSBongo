@@ -1,105 +1,176 @@
-use evdev::{Device, EventType, InputEventKind, Key};
-use std::sync::atomic::{AtomicU64, Ordering};
+mod input;
+mod sprite;
+
+#[cfg(target_os = "linux")]
+mod platform {
+    pub mod x11;
+}
+
+use input::AppEvent;
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::thread;
+use std::time::{Duration, Instant};
+use winit::application::ApplicationHandler;
+use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::window::{Window, WindowAttributes, WindowLevel};
 
-/// Touchpad "contact" events, not actual clicks — fires constantly
-/// just from resting/moving fingers on the pad. Real touchpad clicks
-/// still come through as BTN_LEFT/BTN_RIGHT, which we keep.
-const IGNORED_KEYS: &[Key] = &[
-    Key::BTN_TOUCH,
-    Key::BTN_TOOL_FINGER,
-    Key::BTN_TOOL_DOUBLETAP,
-    Key::BTN_TOOL_TRIPLETAP,
-    Key::BTN_TOOL_QUADTAP,
-    Key::BTN_TOOL_QUINTTAP,
-];
+const WINDOW_WIDTH: u32 = 200;
+const WINDOW_HEIGHT: u32 = 100;
+// how long the "hit" frame stays up after a keypress before reverting to idle
+const ANIMATION_HOLD: Duration = Duration::from_millis(150);
 
-/// Opens every readable /dev/input/event* device that reports key events
-/// (this covers both keyboards AND mice, since mouse buttons are also
-/// EV_KEY events under evdev, e.g. BTN_LEFT/BTN_RIGHT).
-fn find_key_capable_devices() -> Vec<(String, Device)> {
-    let mut found = Vec::new();
+struct App {
+    window: Option<Arc<Window>>,
+    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    active: bool,
+    revert_at: Option<Instant>,
+}
 
-    for (path, device) in evdev::enumerate() {
-        let name = device.name().unwrap_or("Unknown device").to_string();
-
-        let supports_keys = device
-            .supported_events()
-            .contains(EventType::KEY);
-
-        if supports_keys {
-            println!("Found device: {} ({})", name, path.display());
-            found.push((name, device));
+impl App {
+    fn new() -> Self {
+        Self {
+            window: None,
+            surface: None,
+            active: false,
+            revert_at: None,
         }
     }
 
-    found
+    fn redraw(&mut self) {
+        let Some(surface) = self.surface.as_mut() else { return };
+        let mut buffer = match surface.buffer_mut() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("failed to get draw buffer: {e}");
+                return;
+            }
+        };
+
+        sprite::draw(&mut buffer, WINDOW_WIDTH, WINDOW_HEIGHT, self.active);
+
+        if let Err(e) = buffer.present() {
+            eprintln!("failed to present frame: {e}");
+        }
+    }
 }
 
-/// Called every time a tracked key/button is released.
-///
-/// This is the hook point for the real app: right now it just bumps a
-/// counter, but this is where we'll eventually trigger the bongo
-/// animation frame and push an event to the self-hosted server.
-fn on_key_release(counter: &AtomicU64, device_name: &str, key: Key) {
-    let total = counter.fetch_add(1, Ordering::Relaxed) + 1;
-    println!("[{device_name}] {key:?} RELEASED  (total releases: {total})");
+impl ApplicationHandler<AppEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return; // already set up
+        }
 
-    // TODO: trigger bongo cat animation frame here
-    // TODO: send event to self-hosted server here
+        // figure out a bottom-of-screen position on the primary monitor,
+        // falling back to (100, 100) if we can't detect one
+        let position = event_loop
+            .primary_monitor()
+            .map(|m| {
+                let size = m.size();
+                LogicalPosition::new(
+                    (size.width as f64 / 2.0) - (WINDOW_WIDTH as f64 / 2.0),
+                    size.height as f64 - WINDOW_HEIGHT as f64 - 40.0,
+                )
+            })
+            .unwrap_or(LogicalPosition::new(100.0, 100.0));
+
+        let attrs = WindowAttributes::default()
+            .with_inner_size(LogicalSize::new(WINDOW_WIDTH, WINDOW_HEIGHT))
+            .with_position(position)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_resizable(false)
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_title("bongocat-poc");
+
+        let window = Arc::new(
+            event_loop
+                .create_window(attrs)
+                .expect("failed to create window"),
+        );
+
+        #[cfg(target_os = "linux")]
+        {
+            // only meaningful under X11 — see platform::x11 for details
+            if std::env::var("XDG_SESSION_TYPE").as_deref() == Ok("x11") {
+                platform::x11::make_click_through(&window);
+            } else {
+                eprintln!(
+                    "[overlay] click-through skipped: not an X11 session \
+                     (Wayland needs layer-shell, which isn't wired up yet)"
+                );
+            }
+        }
+
+        let context = softbuffer::Context::new(Arc::clone(&window)).expect("softbuffer context");
+        let mut surface =
+            softbuffer::Surface::new(&context, Arc::clone(&window)).expect("softbuffer surface");
+        surface
+            .resize(
+                NonZeroU32::new(WINDOW_WIDTH).unwrap(),
+                NonZeroU32::new(WINDOW_HEIGHT).unwrap(),
+            )
+            .expect("failed to size surface");
+
+        self.window = Some(window);
+        self.surface = Some(surface);
+        self.redraw();
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::KeyPressed | AppEvent::KeyReleased => {
+                self.active = true;
+                self.revert_at = Some(Instant::now() + ANIMATION_HOLD);
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    Instant::now() + ANIMATION_HOLD,
+                ));
+            }
+        }
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::RedrawRequested => self.redraw(),
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(deadline) = self.revert_at {
+            if Instant::now() >= deadline {
+                self.active = false;
+                self.revert_at = None;
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+                event_loop.set_control_flow(ControlFlow::Wait);
+            } else {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+            }
+        }
+    }
 }
 
 fn main() {
-    println!("=== Input capture PoC ===");
-    println!("This listens directly to /dev/input, so it will keep working");
-    println!("even if this terminal/window is not focused.\n");
+    println!("=== bongocat overlay PoC ===");
 
-    let devices = find_key_capable_devices();
+    let event_loop: EventLoop<AppEvent> =
+        EventLoop::with_user_event().build().expect("event loop");
+    let proxy: EventLoopProxy<AppEvent> = event_loop.create_proxy();
 
-    if devices.is_empty() {
-        eprintln!("\nNo key-capable devices found (or no permission to read them).");
-        eprintln!("Fix: sudo usermod -aG input $USER   (then log out/in)");
-        std::process::exit(1);
-    }
+    input::spawn_listeners(proxy);
 
-    println!("\nListening... press keys or click your mouse. Ctrl+C to quit.\n");
-
-    let release_counter = Arc::new(AtomicU64::new(0));
-    let mut handles = Vec::new();
-
-    for (name, mut device) in devices {
-        let release_counter = Arc::clone(&release_counter);
-        // one thread per device — fetch_events() blocks, so each device
-        // needs its own reader
-        let handle = thread::spawn(move || loop {
-            match device.fetch_events() {
-                Ok(events) => {
-                    for event in events {
-                        // value 1 = key/button down, 0 = up, 2 = autorepeat
-                        if let InputEventKind::Key(key) = event.kind() {
-                            if IGNORED_KEYS.contains(&key) {
-                                continue;
-                            }
-                            match event.value() {
-                                1 => println!("[{name}] {key:?} PRESSED"),
-                                0 => on_key_release(&release_counter, &name, key),
-                                2 => continue, // skip autorepeat spam
-                                _ => println!("[{name}] {key:?} UNKNOWN"),
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[{name}] error reading events: {e}");
-                    break;
-                }
-            }
-        });
-        handles.push(handle);
-    }
-
-    for handle in handles {
-        let _ = handle.join();
-    }
+    let mut app = App::new();
+    event_loop.run_app(&mut app).expect("event loop run");
 }
