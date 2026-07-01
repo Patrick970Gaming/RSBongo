@@ -1,11 +1,15 @@
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+mod windows;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 mod stub;
 
 #[cfg(target_os = "linux")]
 pub use linux::spawn_listeners;
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
+pub use windows::spawn_listeners;
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub use stub::spawn_listeners;
 
 /// Events the input backend(s) push into the Bevy world via a

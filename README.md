@@ -70,7 +70,13 @@ cargo run
    hasn't been verified against a live build.
 4. **X11 click-through** — same as before, untested against a live X
    server.
-5. **Crate version drift generally** — Bevy 0.17 is what this targets
+5. **Windows input backend (`src/input/windows.rs`)** — uses low-level
+   `SetWindowsHookExW` keyboard/mouse hooks via `windows-sys`. The
+   highest-risk file in the project: cross-checked signatures against
+   docs.rs but never compiled/run on real Windows. Confirmed the rest
+   of the Bevy port (window, rendering, config) already builds and runs
+   cleanly on Windows — this is the one remaining unverified piece.
+6. **Crate version drift generally** — Bevy 0.17 is what this targets
    (0.18 is still RC as of writing). If `cargo build` resolves a newer
    Bevy, check the migration guide first for anything that doesn't
    compile.
